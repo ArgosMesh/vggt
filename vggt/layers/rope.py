@@ -105,7 +105,9 @@ class RotaryPositionEmbedding2D(nn.Module):
 
             # Generate position-dependent frequencies
             positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
-            angles = torch.einsum("i,j->ij", positions, inv_freq)
+            #torch._check(positions.shape[0] != 1, "positions batch size should not be 1")
+            #angles = torch.einsum("i,j->ij", positions, inv_freq)
+            angles = torch.outer(positions, inv_freq)
 
             # Compute and cache frequency components
             angles = angles.to(dtype)
@@ -174,7 +176,8 @@ class RotaryPositionEmbedding2D(nn.Module):
         feature_dim = tokens.size(-1) // 2
 
         # Get frequency components
-        max_position = int(positions.max()) + 1
+        # max_position = int(positions.max()) + 1
+        max_position = torch.max(positions).int() + 1
         cos_comp, sin_comp = self._compute_frequency_components(feature_dim, max_position, tokens.device, tokens.dtype)
 
         # Split features for vertical and horizontal processing
