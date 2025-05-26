@@ -23,6 +23,9 @@ dependencies = [
     "pyceres>=2.4",
     "pydantic==2.10.6",
     "onnxscript>=0.2.6",
+    "onnx>=1.18.0",
+    "onnxruntime-gpu>=1.22.0",
+    "torchviz>=0.0.3",
 ]
 name = "vggt"
 requires-python = ">= 3.10"
@@ -66,3 +69,13 @@ default = { solve-group = "default" }
 demo = { features = ["demo"], solve-group = "default" }
 
 [tool.pixi.tasks]
+
+[dependency-groups]
+dev = [
+    "flake8>=7.2.0",
+    "mypy>=1.15.0",
+    "pylsp-mypy>=0.7.0",
+    "python-lsp-black>=2.0.0",
+    "python-lsp-isort>=0.2.1",
+    "python-lsp-server>=1.12.2",
+]
