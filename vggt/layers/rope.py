@@ -53,6 +53,9 @@ class PositionGetter:
             y_coords = torch.arange(height, device=device)
             x_coords = torch.arange(width, device=device)
             positions = torch.cartesian_prod(y_coords, x_coords)
+            # Replace cartesian_prod with meshgrid for ONNX compatibility
+            # y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
+            # positions = torch.stack([y_grid.flatten(), x_grid.flatten()], dim=1)
             self.position_cache[height, width] = positions
 
         cached_positions = self.position_cache[height, width]
@@ -100,8 +103,8 @@ class RotaryPositionEmbedding2D(nn.Module):
         cache_key = (dim, seq_len, device, dtype)
         if cache_key not in self.frequency_cache:
             # Compute frequency bands
-            exponents = torch.arange(0, dim, 2, device=device).float() / dim
-            inv_freq = 1.0 / (self.base_frequency**exponents)
+            exponents = torch.arange(0, dim, 2, device=device, dtype=torch.float32) / dim
+            inv_freq = torch.tensor(1.0, dtype=torch.float32, device=device) / (self.base_frequency**exponents)
 
             # Generate position-dependent frequencies
             positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)

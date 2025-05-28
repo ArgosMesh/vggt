@@ -357,7 +357,8 @@ def compute_score_fn(query_point_feat, patch_feat, fine_pred_track, sradius, psi
     reference_frame_feat = reference_frame_feat[:, 1:].reshape(B * (S - 1) * N, C_out, ssize * ssize)
 
     # Compute similarity
-    sim_matrix = torch.einsum("mc,mcr->mr", query_point_feat, reference_frame_feat)
+    # sim_matrix = torch.einsum("mc,mcr->mr", query_point_feat.float(), reference_frame_feat.float())
+    sim_matrix = (query_point_feat.float().unsqueeze(-1) * reference_frame_feat.float()).sum(dim=1)
     softmax_temp = 1.0 / C_out**0.5
     heatmap = torch.softmax(softmax_temp * sim_matrix, dim=1)
     # 2D heatmaps

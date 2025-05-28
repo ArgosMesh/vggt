@@ -73,12 +73,13 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim: int, pos: torch.Tensor) -> torc
     - emb: The generated 1D positional embedding.
     """
     assert embed_dim % 2 == 0
-    omega = torch.arange(embed_dim // 2, dtype=torch.double)
+    omega = torch.arange(embed_dim // 2, dtype=torch.float32)
     omega /= embed_dim / 2.0
     omega = 1.0 / 10000**omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
-    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+    # out = torch.einsum("m,d->md", pos.float(), omega)  # (M, D/2), outer product
+    out = pos.float().unsqueeze(1) * omega.unsqueeze(0)  # (M, D/2), outer product
 
     emb_sin = torch.sin(out)  # (M, D/2)
     emb_cos = torch.cos(out)  # (M, D/2)

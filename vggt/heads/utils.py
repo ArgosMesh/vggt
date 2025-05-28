@@ -46,12 +46,13 @@ def make_sincos_pos_embed(embed_dim: int, pos: torch.Tensor, omega_0: float = 10
     """
     assert embed_dim % 2 == 0
     device = pos.device
-    omega = torch.arange(embed_dim // 2, dtype=torch.float32 if device.type == "mps" else torch.double, device=device)
+    omega = torch.arange(embed_dim // 2, dtype=torch.float32, device=device)
     omega /= embed_dim / 2.0
     omega = 1.0 / omega_0**omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
-    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+    # out = torch.einsum("m,d->md", pos.float(), omega)  # (M, D/2), outer product
+    out = pos.float().unsqueeze(1) * omega.unsqueeze(0)  # (M, D/2), outer product
 
     emb_sin = torch.sin(out)  # (M, D/2)
     emb_cos = torch.cos(out)  # (M, D/2)

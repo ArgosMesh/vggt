@@ -41,7 +41,8 @@ def img_from_cam_np(
     points_cam_h = np.concatenate([uv, ones], axis=1)  # (B,3,N)
 
     # batched mat-mul: K · [u v 1]ᵀ
-    points2D_h = np.einsum("bij,bjk->bik", intrinsics, points_cam_h)  # (B,3,N)
+    # points2D_h = np.einsum("bij,bjk->bik", intrinsics, points_cam_h)  # (B,3,N)
+    points2D_h = intrinsics @ points_cam_h  # (B,3,N)
     points2D = np.nan_to_num(points2D_h[:, :2, :], nan=default)  # (B,2,N)
 
     return points2D.transpose(0, 2, 1)  # (B,N,2)
@@ -87,7 +88,8 @@ def project_3D_points_np(
     # ----- 2. apply extrinsics  (camera frame) ------------------------------
     # X_cam = E · X_hom
     # einsum:  E_(b i j)  ·  X_(b n j)  →  (b n i)
-    points_cam = np.einsum("bij,bnj->bni", extrinsics, points3D_h_B)  # (B,N,3)
+    # points_cam = np.einsum("bij,bnj->bni", extrinsics, points3D_h_B)  # (B,N,3)
+    points_cam = (extrinsics @ points3D_h_B.transpose(0, 2, 1)).transpose(0, 2, 1)  # (B,N,3)
     points_cam = points_cam.transpose(0, 2, 1)  # (B,3,N)
 
     if only_points_cam:
@@ -117,7 +119,7 @@ def project_3D_points(points3D, extrinsics, intrinsics=None, extra_params=None, 
         tuple: (points2D, points_cam) where points2D is of shape BxNx2 or None if only_points_cam=True,
                and points_cam is of shape Bx3xN.
     """
-    with torch.cuda.amp.autocast(dtype=torch.double):
+    with torch.cuda.amp.autocast(dtype=torch.float32):
         N = points3D.shape[0]  # Number of points
         B = extrinsics.shape[0]  # Batch size, i.e., number of cameras
         points3D_homogeneous = torch.cat([points3D, torch.ones_like(points3D[..., 0:1])], dim=1)  # Nx4
@@ -180,9 +182,9 @@ if __name__ == "__main__":
     B, N = 24, 10240
 
     for _ in range(100):
-        points3D = np.random.rand(N, 3).astype(np.float64)
-        extrinsics = np.random.rand(B, 3, 4).astype(np.float64)
-        intrinsics = np.random.rand(B, 3, 3).astype(np.float64)
+        points3D = np.random.rand(N, 3).astype(np.float32)
+        extrinsics = np.random.rand(B, 3, 4).astype(np.float32)
+        intrinsics = np.random.rand(B, 3, 3).astype(np.float32)
 
         # Convert to torch tensors
         points3D_torch = torch.tensor(points3D)
