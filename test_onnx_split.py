@@ -1,0 +1,253 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
+import torch
+import numpy as np
+import sys
+import cv2
+import onnxruntime as ort
+
+sys.path.append("vggt/")
+
+from vggt.utils.load_fn import load_and_preprocess_images
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+from vggt.utils.geometry import unproject_depth_map_to_point_map
+
+device = "cpu"
+
+# Load ONNX models
+print("Loading split ONNX models...")
+image_encoder_session = ort.InferenceSession("vggt_image_encoder.onnx")
+aggregator_session = ort.InferenceSession("vggt_aggregator.onnx")
+
+# Get model input/output info
+encoder_input_info = image_encoder_session.get_inputs()[0]
+encoder_output_info = image_encoder_session.get_outputs()[0]
+
+aggregator_input_info = aggregator_session.get_inputs()
+aggregator_output_info = aggregator_session.get_outputs()
+
+print(f"Image Encoder input: {encoder_input_info.name}, shape: {encoder_input_info.shape}, type: {encoder_input_info.type}")
+print(f"Image Encoder output: {encoder_output_info.name}, shape: {encoder_output_info.shape}, type: {encoder_output_info.type}")
+
+print(f"Aggregator inputs: {[(inp.name, inp.shape, inp.type) for inp in aggregator_input_info]}")
+print(f"Aggregator outputs: {[out.name for out in aggregator_output_info]}")
+
+# Load first three kitchen images (same as other test scripts)
+image_paths = [
+    "examples/kitchen/images/00.png",
+    "examples/kitchen/images/01.png", 
+    "examples/kitchen/images/02.png"
+]
+
+print(f"Loading {len(image_paths)} kitchen images...")
+images = load_and_preprocess_images(image_paths).to(device)
+print(f"Preprocessed images shape: {images.shape}")
+
+S, C_in, H, W = images.shape
+B = 1  # Single batch for demo
+
+# Add batch dimension if needed
+if len(images.shape) == 4:
+    images = images.unsqueeze(0)  # [1, S, 3, H, W]
+
+B, S, C_in, H, W = images.shape
+
+# Convert to numpy for ONNX
+images_np = images.numpy()
+
+# Run split ONNX inference
+print("Running Image Encoder ONNX inference...")
+try:
+    # Process each frame separately and concatenate tokens
+    patch_tokens_list = []
+    for i in range(S):
+        single_frame = images_np[:, i]  # [B, 3, H, W]
+        encoder_outputs = image_encoder_session.run(None, {encoder_input_info.name: single_frame})
+        frame_tokens = encoder_outputs[0]  # [B, P, C]
+        patch_tokens_list.append(frame_tokens)
+    
+    # Concatenate all frame tokens in batch dimension
+    patch_tokens = np.concatenate(patch_tokens_list, axis=0)  # [B*S, P, C]
+    print(f"Image Encoder output shape: {patch_tokens.shape}")
+    
+    print("Running Aggregator ONNX inference...")
+    
+    # Prepare aggregator inputs - only patch_tokens based on the ONNX model signature
+    aggregator_inputs = {
+        "patch_tokens": patch_tokens
+    }
+    
+    aggregator_outputs = aggregator_session.run(None, aggregator_inputs)
+    print("Split ONNX inference successful!")
+    
+    # Parse outputs based on the model structure
+    predictions = {}
+    for i, output in enumerate(aggregator_outputs):
+        output_name = aggregator_output_info[i].name
+        predictions[output_name] = output
+    
+    print(f"Prediction keys: {list(predictions.keys())}")
+    
+    # Process outputs similar to the complete test
+    depth_map = None
+    pose_enc = None
+    
+    # Look for depth and pose encoding
+    for key, value in predictions.items():
+        print(f"{key}: shape={value.shape}")
+        if "depth" in key and len(value.shape) == 5 and value.shape[-1] == 1:
+            print(f"Found depth map in {key}")
+            depth_map = value
+        elif "pose_enc" in key and len(value.shape) == 3 and value.shape[-1] == 9:
+            print(f"Found pose encoding in {key}")
+            pose_enc = value
+
+except Exception as e:
+    print(f"Split ONNX inference failed: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# Process depth predictions if found
+if depth_map is not None:
+    print(f"Processing depth map with shape: {depth_map.shape}")
+    
+    # Remove batch dimension if present
+    if depth_map.ndim == 5:  # (1, S, H, W, 1)
+        depth_map = depth_map.squeeze(0)
+    elif depth_map.ndim == 4 and depth_map.shape[0] == 1:  # (1, H, W, 1)
+        depth_map = depth_map.squeeze(0)
+    
+    # Save depth images
+    print("Saving split ONNX depth images...")
+    for i, depth in enumerate(depth_map):
+        # Normalize depth to 0-255 range for visualization
+        depth_normalized = depth.squeeze()  # Remove channel dimension if present
+        depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
+        
+        if depth_max > depth_min:
+            depth_vis = ((depth_normalized - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
+        else:
+            depth_vis = np.zeros_like(depth_normalized, dtype=np.uint8)
+        
+        # Apply colormap for better visualization
+        depth_colored = cv2.applyColorMap(depth_vis, cv2.COLORMAP_PLASMA)
+        
+        # Save depth image
+        depth_filename = f"onnx_split_test_depth_{i:02d}.png"
+        cv2.imwrite(depth_filename, depth_colored)
+        print(f"Saved split ONNX depth image: {depth_filename}")
+    
+    # If pose encoding is available, compute camera parameters
+    if pose_enc is not None:
+        print("Computing camera parameters from pose encoding...")
+        if pose_enc.ndim == 3 and pose_enc.shape[0] == 1:  # Remove batch dimension
+            pose_enc = pose_enc.squeeze(0)
+        
+        # Convert to torch tensor for processing (the utility functions expect torch tensors)
+        pose_enc_tensor = torch.from_numpy(pose_enc)
+        image_shape = images.shape[-2:]
+        
+        try:
+            extrinsic, intrinsic = pose_encoding_to_extri_intri(pose_enc_tensor, image_shape)
+            
+            # Convert back to numpy
+            extrinsic_np = extrinsic.numpy()
+            intrinsic_np = intrinsic.numpy()
+            
+            print(f"Extrinsic matrices shape: {extrinsic_np.shape}")
+            print(f"Intrinsic matrices shape: {intrinsic_np.shape}")
+            
+            # Generate world points from depth map
+            print("Computing world points from split ONNX depth predictions...")
+            world_points = unproject_depth_map_to_point_map(
+                torch.from_numpy(depth_map), 
+                torch.from_numpy(extrinsic_np), 
+                torch.from_numpy(intrinsic_np)
+            ).numpy()
+            
+            print(f"World points shape: {world_points.shape}")
+            
+            # Save all predictions
+            onnx_split_predictions = {
+                "depth": depth_map,
+                "pose_enc": pose_enc,
+                "extrinsic": extrinsic_np,
+                "intrinsic": intrinsic_np,
+                "world_points_from_depth": world_points,
+                "patch_tokens": patch_tokens
+            }
+            
+        except Exception as e:
+            print(f"Error in pose encoding processing: {e}")
+            print("Skipping camera parameter computation, saving depth only")
+            # Save predictions without camera parameters
+            onnx_split_predictions = {
+                "depth": depth_map,
+                "pose_enc": pose_enc,
+                "patch_tokens": patch_tokens
+            }
+        
+        # Add other predictions if available
+        for key, value in predictions.items():
+            if key not in ["depth", "pose_enc"]:  # Don't duplicate processed data
+                onnx_split_predictions[f"raw_{key}"] = value
+        
+        prediction_save_path = "onnx_split_test_predictions.npz"
+        np.savez(prediction_save_path, **onnx_split_predictions)
+        print(f"Saved split ONNX predictions to: {prediction_save_path}")
+
+else:
+    print("Depth predictions not found in expected format")
+    
+    # Save raw outputs anyway
+    raw_save_path = "onnx_split_test_raw_outputs.npz"
+    raw_predictions = predictions.copy()
+    raw_predictions["patch_tokens"] = patch_tokens
+    np.savez(raw_save_path, **raw_predictions)
+    print(f"Saved raw split ONNX outputs to: {raw_save_path}")
+
+print("Split ONNX model test completed successfully!")
+print(f"Split ONNX depth images saved as: onnx_split_test_depth_00.png, onnx_split_test_depth_01.png, onnx_split_test_depth_02.png")
+
+# Compare with original predictions if available
+try:
+    print("\nComparing with complete model predictions...")
+    original_predictions = np.load("onnx_complete_test_predictions.npz")
+    
+    if "depth" in original_predictions and depth_map is not None:
+        original_depth = original_predictions["depth"]
+        
+        # Compare depth maps
+        depth_diff = np.abs(depth_map - original_depth)
+        max_diff = np.max(depth_diff)
+        mean_diff = np.mean(depth_diff)
+        
+        print(f"Depth comparison - Max difference: {max_diff:.6f}, Mean difference: {mean_diff:.6f}")
+        
+        if max_diff < 1e-4:
+            print("✓ Depth maps match closely!")
+        else:
+            print("⚠ Depth maps have significant differences")
+    
+    if "pose_enc" in original_predictions and pose_enc is not None:
+        original_pose = original_predictions["pose_enc"]
+        
+        # Compare pose encodings
+        pose_diff = np.abs(pose_enc - original_pose)
+        max_diff = np.max(pose_diff)
+        mean_diff = np.mean(pose_diff)
+        
+        print(f"Pose encoding comparison - Max difference: {max_diff:.6f}, Mean difference: {mean_diff:.6f}")
+        
+        if max_diff < 1e-4:
+            print("✓ Pose encodings match closely!")
+        else:
+            print("⚠ Pose encodings have significant differences")
+
+except Exception as e:
+    print(f"Could not compare with original predictions: {e}")
