@@ -32,8 +32,14 @@ image_paths = [
     # "examples/room/images/no_overlap_4.jpg",
     # "examples/room/images/no_overlap_2.jpg",
     # "examples/room/images/no_overlap_3.jpg",
-    "examples/gq/02.png",
     "examples/gq/01.png",
+    "examples/gq/02.png",
+    "examples/gq/03.png",
+    # "examples/gq/04.png",
+    # "examples/gq/05.png",
+    # "examples/gq/06.png",
+    # "examples/gq/07.png",
+    # "examples/gq/08.png"
 ]
 
 def preprocess_images_640x480_then_load(image_paths):
