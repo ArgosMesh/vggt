@@ -36,8 +36,43 @@ image_paths = [
     "examples/gq/01.png",
 ]
 
+def preprocess_images_640x480_then_load(image_paths):
+    """
+    First resize all images to 640x480, then apply standard preprocessing.
+    """
+    from PIL import Image
+    import tempfile
+    import os
+    
+    # Create temporary files for resized images
+    temp_paths = []
+    for image_path in image_paths:
+        # Open and resize to 640x480
+        img = Image.open(image_path)
+        if img.mode == "RGBA":
+            background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            img = Image.alpha_composite(background, img)
+        img = img.convert("RGB")
+        
+        # Resize to 640x480
+        img_resized = img.resize((640, 480), Image.Resampling.BICUBIC)
+        
+        # Save to temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        img_resized.save(temp_file.name)
+        temp_paths.append(temp_file.name)
+    
+    # Apply standard preprocessing
+    images = load_and_preprocess_images(temp_paths)
+    
+    # Clean up temporary files
+    for temp_path in temp_paths:
+        os.unlink(temp_path)
+    
+    return images
+
 print(f"Loading {len(image_paths)} kitchen images...")
-images = load_and_preprocess_images(image_paths).to(device)
+images = preprocess_images_640x480_then_load(image_paths).to(device)
 print(f"Preprocessed images shape: {images.shape}")
 
 # Define the Image Encoder (DINOV2 patch embedding only)
