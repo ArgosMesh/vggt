@@ -298,15 +298,36 @@ if depth_map is not None:
         np.savez(prediction_save_path, **onnx_split_predictions)
         print(f"Saved split ONNX predictions to: {prediction_save_path}")
         
-        # Visualize pointcloud with rerun
+        # Initialize rerun for visualization
+        print("Initializing rerun visualization...")
+        rr.init("VGGT_ONNX_Split")
+        rr.spawn()
+        
+        # Log original images
+        original_images = images.cpu().numpy().squeeze(0)  # Remove batch dimension (S, C, H, W)
+        for i in range(original_images.shape[0]):
+            img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
+            # Denormalize image (assuming it was normalized to [-1, 1] or [0, 1])
+            img = np.clip(img, 0, 1)
+            img = (img * 255).astype(np.uint8)
+            rr.log(f"images/frame_{i:02d}", rr.Image(img))
+        
+        # Log depth images
+        for i in range(depth_map.shape[0]):
+            depth_normalized = depth_map[i].squeeze()
+            depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
+            if depth_max > depth_min:
+                depth_vis = (depth_normalized - depth_min) / (depth_max - depth_min)
+            else:
+                depth_vis = np.zeros_like(depth_normalized)
+            rr.log(f"depth/frame_{i:02d}", rr.DepthImage(depth_vis))
+        
+        # Visualize pointcloud with rerun if available
         if "world_points" in onnx_split_predictions and onnx_split_predictions["world_points"] is not None:
-            print("Visualizing split ONNX colored pointcloud with rerun...")
-            rr.init("VGGT_ONNX_Pointcloud")
-            rr.spawn()
+            print("Adding colored pointcloud to rerun visualization...")
             
-            # Get world points and original images
+            # Get world points
             world_points_vis = onnx_split_predictions["world_points"]  # (S, H, W, 3)
-            original_images = images.cpu().numpy().squeeze(0)  # Remove batch dimension (S, C, H, W)
             
             # Flatten the world points from all frames
             points_flattened = world_points_vis.reshape(-1, 3)
@@ -329,14 +350,6 @@ if depth_map is not None:
             
             # Log the colored pointcloud
             rr.log("world/pointcloud", rr.Points3D(points_valid, colors=colors_valid, radii=0.01))
-            
-            # Also log original images for reference
-            for i in range(original_images.shape[0]):
-                img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
-                # Denormalize image (assuming it was normalized to [-1, 1] or [0, 1])
-                img = np.clip(img, 0, 1)
-                img = (img * 255).astype(np.uint8)
-                rr.log(f"images/frame_{i:02d}", rr.Image(img))
             
             print(f"Visualized {len(points_valid)} colored points out of {len(points_flattened)} total points")
 
