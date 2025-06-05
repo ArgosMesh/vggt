@@ -49,9 +49,8 @@ print("="*60)
 
 # Load first three kitchen images (same as other test scripts)
 image_paths = [
-    "examples/room/images/no_overlap_4.jpg",
-    "examples/room/images/no_overlap_2.jpg",
-    "examples/room/images/no_overlap_3.jpg"
+    "examples/gq/02.png",
+    "examples/gq/01.png",
 ]
 
 print(f"Loading {len(image_paths)} kitchen images...")
@@ -257,23 +256,37 @@ if depth_map is not None:
         
         # Visualize pointcloud with rerun
         if "world_points" in onnx_split_predictions and onnx_split_predictions["world_points"] is not None:
-            print("Visualizing split ONNX pointcloud with rerun...")
+            print("Visualizing split ONNX colored pointcloud with rerun...")
             rr.init("VGGT_ONNX_Pointcloud")
             rr.spawn()
-            # Flatten the world points from all frames
+            
+            # Get world points and original images
             world_points_vis = onnx_split_predictions["world_points"]  # (S, H, W, 3)
+            original_images = images.cpu().numpy().squeeze(0)  # Remove batch dimension (S, C, H, W)
+            
+            # Flatten the world points from all frames
             points_flattened = world_points_vis.reshape(-1, 3)
+            
+            # Extract colors from original images
+            # Reshape images to match world points structure: (S, H, W, C)
+            colors_array = original_images.transpose(0, 2, 3, 1)  # (S, C, H, W) -> (S, H, W, C)
+            colors_flattened = colors_array.reshape(-1, 3)  # Flatten to match points
+            
+            # Denormalize colors to [0, 255] range
+            colors_flattened = np.clip(colors_flattened, 0, 1)
+            colors_flattened = (colors_flattened * 255).astype(np.uint8)
             
             # Remove invalid points (those with zero depth or extreme values)
             valid_mask = np.all(np.isfinite(points_flattened), axis=1)
             valid_mask &= np.linalg.norm(points_flattened, axis=1) < 100  # Remove points too far away
-            points_valid = points_flattened[valid_mask]
             
-            # Log the pointcloud
-            rr.log("world/pointcloud", rr.Points3D(points_valid, radii=0.01))
+            points_valid = points_flattened[valid_mask]
+            colors_valid = colors_flattened[valid_mask]
+            
+            # Log the colored pointcloud
+            rr.log("world/pointcloud", rr.Points3D(points_valid, colors=colors_valid, radii=0.01))
             
             # Also log original images for reference
-            original_images = images.cpu().numpy().squeeze(0)  # Remove batch dimension
             for i in range(original_images.shape[0]):
                 img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
                 # Denormalize image (assuming it was normalized to [-1, 1] or [0, 1])
@@ -281,7 +294,7 @@ if depth_map is not None:
                 img = (img * 255).astype(np.uint8)
                 rr.log(f"images/frame_{i:02d}", rr.Image(img))
             
-            print(f"Visualized {len(points_valid)} valid points out of {len(points_flattened)} total points")
+            print(f"Visualized {len(points_valid)} colored points out of {len(points_flattened)} total points")
 
 else:
     print("Depth predictions not found in expected format")
