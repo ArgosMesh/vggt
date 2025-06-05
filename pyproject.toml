@@ -19,10 +19,11 @@ dependencies = [
     "requests>=2.32.3",
     "trimesh>=4.6.10",
     "matplotlib>=3.10.3",
-    "pycolmap>=3.11.1",
+    #"pycolmap>=3.11.1",
     "pyceres>=2.4",
     "pydantic==2.10.6",
     "onnxscript>=0.2.6",
+    "rerun-sdk>=0.23.1",
 ]
 name = "vggt"
 requires-python = ">= 3.10"

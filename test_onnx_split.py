@@ -49,6 +49,9 @@ print("="*60)
 
 # Load first three kitchen images (same as other test scripts)
 image_paths = [
+    # "examples/room/images/no_overlap_4.jpg",
+    # "examples/room/images/no_overlap_2.jpg",
+    # "examples/room/images/no_overlap_3.jpg",
     "examples/gq/02.png",
     "examples/gq/01.png",
 ]

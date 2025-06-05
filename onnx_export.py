@@ -30,9 +30,9 @@ model = model.to(device)
 
 # Load first three kitchen images
 image_paths = [
-    "examples/kitchen/images/00.png",
-    "examples/kitchen/images/01.png", 
-    "examples/kitchen/images/02.png"
+    "examples/room/images/no_overlap_4.jpg",
+    "examples/room/images/no_overlap_2.jpg",
+    "examples/room/images/no_overlap_3.jpg"
 ]
 
 print(f"Loading {len(image_paths)} kitchen images...")
@@ -98,7 +98,7 @@ torch.onnx.export(
     report=True, 
     opset_version=17,
     input_names=["input"], 
-    output_names=["output"]
+    output_names=["pose_enc", "depth", "depth_conf", "world_points", "world_points_conf"],
 )
 
 print("ONNX export completed successfully!")
