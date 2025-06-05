@@ -9,6 +9,7 @@ import numpy as np
 import sys
 import cv2
 import onnxruntime as ort
+import rerun as rr
 
 sys.path.append("vggt/")
 
@@ -131,16 +132,27 @@ try:
     depth_map = None
     pose_enc = None
 
-    # Look for depth and pose encoding
+    # Extract direct outputs from ONNX model
     print(f"\nAggregator output shapes:")
+    depth_map = None
+    pose_enc = None
+    world_points = None
+    world_points_conf = None
+    
     for key, value in predictions.items():
         print(f"  {key}: {value.shape}")
-        if "depth" in key and len(value.shape) >= 4 and value.shape[-1] == 1:
+        if key == "depth":
             print(f"    → Found depth map in {key}")
             depth_map = value
-        elif "pose_enc" in key and len(value.shape) >= 2 and value.shape[-1] == 9:
+        elif key == "pose_enc":
             print(f"    → Found pose encoding in {key}")
             pose_enc = value
+        elif key == "world_points":
+            print(f"    → Found world points in {key}")
+            world_points = value
+        elif key == "world_points_conf":
+            print(f"    → Found world points confidence in {key}")
+            world_points_conf = value
 
 except Exception as e:
     print(f"Split ONNX inference failed: {e}")
@@ -198,15 +210,18 @@ if depth_map is not None:
             print(f"Extrinsic matrices shape: {extrinsic_np.shape}")
             print(f"Intrinsic matrices shape: {intrinsic_np.shape}")
 
-            # Generate world points from depth map
-            print("Computing world points from split ONNX depth predictions...")
-            world_points = unproject_depth_map_to_point_map(
-                torch.from_numpy(depth_map),
-                torch.from_numpy(extrinsic_np),
-                torch.from_numpy(intrinsic_np)
-            ).numpy()
-
-            print(f"World points shape: {world_points.shape}")
+            # Use direct world points from ONNX model (no need to compute)
+            if world_points is not None:
+                # Remove batch dimension if present
+                if world_points.ndim == 5:  # (1, S, H, W, 3)
+                    world_points = world_points.squeeze(0)
+                print(f"Direct world points shape: {world_points.shape}")
+                
+                # Also process world points confidence if available
+                if world_points_conf is not None:
+                    if world_points_conf.ndim == 4:  # (1, S, H, W)
+                        world_points_conf = world_points_conf.squeeze(0)
+                    print(f"World points confidence shape: {world_points_conf.shape}")
 
             # Save all predictions
             onnx_split_predictions = {
@@ -214,17 +229,20 @@ if depth_map is not None:
                 "pose_enc": pose_enc,
                 "extrinsic": extrinsic_np,
                 "intrinsic": intrinsic_np,
-                "world_points_from_depth": world_points,
+                "world_points": world_points,
+                "world_points_conf": world_points_conf,
                 "patch_tokens": patch_tokens
             }
 
         except Exception as e:
             print(f"Error in pose encoding processing: {e}")
             print("Skipping camera parameter computation, saving depth only")
-            # Save predictions without camera parameters
+            # Save predictions without camera parameters but include direct world points
             onnx_split_predictions = {
                 "depth": depth_map,
                 "pose_enc": pose_enc,
+                "world_points": world_points,
+                "world_points_conf": world_points_conf,
                 "patch_tokens": patch_tokens
             }
 
@@ -236,6 +254,34 @@ if depth_map is not None:
         prediction_save_path = "onnx_split_test_predictions.npz"
         np.savez(prediction_save_path, **onnx_split_predictions)
         print(f"Saved split ONNX predictions to: {prediction_save_path}")
+        
+        # Visualize pointcloud with rerun
+        if "world_points" in onnx_split_predictions and onnx_split_predictions["world_points"] is not None:
+            print("Visualizing split ONNX pointcloud with rerun...")
+            rr.init("VGGT_ONNX_Pointcloud")
+            rr.spawn()
+            # Flatten the world points from all frames
+            world_points_vis = onnx_split_predictions["world_points"]  # (S, H, W, 3)
+            points_flattened = world_points_vis.reshape(-1, 3)
+            
+            # Remove invalid points (those with zero depth or extreme values)
+            valid_mask = np.all(np.isfinite(points_flattened), axis=1)
+            valid_mask &= np.linalg.norm(points_flattened, axis=1) < 100  # Remove points too far away
+            points_valid = points_flattened[valid_mask]
+            
+            # Log the pointcloud
+            rr.log("world/pointcloud", rr.Points3D(points_valid, radii=0.01))
+            
+            # Also log original images for reference
+            original_images = images.cpu().numpy().squeeze(0)  # Remove batch dimension
+            for i in range(original_images.shape[0]):
+                img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
+                # Denormalize image (assuming it was normalized to [-1, 1] or [0, 1])
+                img = np.clip(img, 0, 1)
+                img = (img * 255).astype(np.uint8)
+                rr.log(f"images/frame_{i:02d}", rr.Image(img))
+            
+            print(f"Visualized {len(points_valid)} valid points out of {len(points_flattened)} total points")
 
 else:
     print("Depth predictions not found in expected format")
