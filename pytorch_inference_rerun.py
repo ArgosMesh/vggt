@@ -35,22 +35,22 @@ def preprocess_images_640x480_then_load(image_paths):
             background = Image.new("RGBA", img.size, (255, 255, 255, 255))
             img = Image.alpha_composite(background, img)
         img = img.convert("RGB")
-        
+
         # Resize to 640x480
         img_resized = img.resize((640, 480), Image.Resampling.BICUBIC)
-        
+
         # Save to temporary file
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
         img_resized.save(temp_file.name)
         temp_paths.append(temp_file.name)
-    
+
     # Apply standard preprocessing
     images = load_and_preprocess_images(temp_paths)
-    
+
     # Clean up temporary files
     for temp_path in temp_paths:
         os.unlink(temp_path)
-    
+
     return images
 
 print("Initializing and loading VGGT PyTorch model...")
@@ -65,9 +65,9 @@ model = model.to(device)
 image_paths = [
     "examples/gq/01.png",
     "examples/gq/02.png",
-    "examples/gq/03.png",
+    # "examples/gq/03.png",
     # "examples/gq/04.png",
-    # "examples/gq/05.png",
+    "examples/gq/05.png",
     # "examples/gq/06.png",
     # "examples/gq/07.png",
     # "examples/gq/08.png"
@@ -123,19 +123,19 @@ if depth_map_np.ndim == 5:  # (1, S, H, W, 1)
 
 for i in range(depth_map_np.shape[0]):  # Iterate through sequence
     depth = depth_map_np[i]  # (H, W, 1)
-    
+
     # Normalize depth to 0-255 range for visualization
     depth_normalized = depth.squeeze()  # Remove channel dimension -> (H, W)
-    
+
     depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
     if depth_max > depth_min:
         depth_vis = ((depth_normalized - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
     else:
         depth_vis = np.zeros_like(depth_normalized, dtype=np.uint8)
-    
+
     # Apply colormap for better visualization
     depth_colored = cv2.applyColorMap(depth_vis, cv2.COLORMAP_PLASMA)
-    
+
     # Save depth image
     depth_filename = f"pytorch_test_depth_{i:02d}.png"
     cv2.imwrite(depth_filename, depth_colored)
