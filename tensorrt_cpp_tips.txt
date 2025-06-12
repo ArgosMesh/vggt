@@ -1,0 +1,22 @@
+  Looking at the preprocessing pipeline in the code:
+
+  1. Images are loaded and converted to RGB (lines 141-150 in load_fn.py)
+  2. Images are resized to specific dimensions - either 640x480 (in the test script) or 518x518/518xH (in load_fn.py)
+  3. Images are converted to tensors using torchvision.transforms.ToTensor() which normalizes to [0, 1] range (line 170)
+  4. The images remain in the [0, 1] range - there's no additional normalization
+
+  Key observations from the test script:
+  - Line 231 shows the input image stats: min: {single_frame.min():.3f}, max: {single_frame.max():.3f}
+  - The images are in the range [0, 1] after preprocessing
+  - The model expects images in CHW format (Channels, Height, Width) not HWC
+
+  For your C++ ROS2 implementation, you need to:
+  1. Convert images to RGB if they're in BGR (OpenCV default)
+  2. Resize to the expected dimensions (640x480 or as configured)
+  3. Normalize pixel values from [0, 255] to [0, 1] by dividing by 255.0
+  4. Transpose from HWC to CHW format (this is crucial!)
+  5. Ensure float32 data type
+
+  The preprocessing in C++ would look something like:
+  // Convert BGR to RGB, resize, normalize to [0,1], and transpose to CHW
+
