@@ -10,6 +10,7 @@ import sys
 import cv2
 import onnxruntime as ort
 import rerun as rr
+import rerun.blueprint as rrb
 
 sys.path.append("vggt/")
 
@@ -18,6 +19,24 @@ from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 
 device = "cpu"
+
+def draw_pose(transform: np.ndarray, name: str, static: bool = False):
+    """Draw camera pose with RGB axes arrows"""
+    rr.log(name,
+        rr.Arrows3D(origins=[0,0,0], vectors= [[0.03, 0, 0], [0, 0.03, 0], [0, 0, 0.03]],
+                    colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]],
+                    radii=[0.001, 0.001, 0.001]
+        ),
+        static=static,
+    )
+
+    rr.log(name,
+        rr.Transform3D(
+            translation=transform[:3, 3],
+            mat3x3=transform[:3, :3],
+        ),
+        static=static,
+    )
 
 # Load ONNX models
 print("Loading split ONNX models...")
@@ -236,11 +255,25 @@ if depth_map is not None:
     # If pose encoding is available, compute camera parameters
     if pose_enc is not None:
         print("Computing camera parameters from pose encoding...")
-        if pose_enc.ndim == 3 and pose_enc.shape[0] == 1:  # Remove batch dimension
-            pose_enc = pose_enc.squeeze(0)
+        print(f"Original pose_enc shape: {pose_enc.shape}")
+        
+        # Handle different possible shapes
+        if pose_enc.ndim == 3:
+            if pose_enc.shape[0] == 1:  # (1, S, 9)
+                pose_enc = pose_enc.squeeze(0)  # (S, 9)
+            elif pose_enc.shape[1] == 1:  # (S, 1, 9) 
+                pose_enc = pose_enc.squeeze(1)  # (S, 9)
+        
+        print(f"Processed pose_enc shape: {pose_enc.shape}")
 
         # Convert to torch tensor for processing (the utility functions expect torch tensors)
         pose_enc_tensor = torch.from_numpy(pose_enc)
+        
+        # Add batch dimension if needed (function expects BxSx9 or at least 3D tensor)
+        if pose_enc_tensor.ndim == 2:
+            pose_enc_tensor = pose_enc_tensor.unsqueeze(0)  # Add batch dimension
+            print(f"Added batch dimension, new shape: {pose_enc_tensor.shape}")
+        
         image_shape = images.shape[-2:]
 
         try:
@@ -249,6 +282,11 @@ if depth_map is not None:
             # Convert back to numpy
             extrinsic_np = extrinsic.numpy()
             intrinsic_np = intrinsic.numpy()
+            
+            # Remove batch dimension if we added it
+            if extrinsic_np.ndim == 4 and extrinsic_np.shape[0] == 1:
+                extrinsic_np = extrinsic_np.squeeze(0)
+                intrinsic_np = intrinsic_np.squeeze(0)
 
             print(f"Extrinsic matrices shape: {extrinsic_np.shape}")
             print(f"Intrinsic matrices shape: {intrinsic_np.shape}")
@@ -300,28 +338,25 @@ if depth_map is not None:
 
         # Initialize rerun for visualization
         print("Initializing rerun visualization...")
-        rr.init("VGGT_ONNX_Split")
+        rr.init("VGGT_ONNX_Split_Pointcloud")
         rr.spawn()
 
-        # Log original images
+        # Set up blueprint with camera views
+        rr.send_blueprint(
+            rrb.Blueprint(
+                rrb.Horizontal(
+                    rrb.Spatial3DView(origin="body/pose", contents="body/**"),
+                    rrb.Vertical(
+                        rrb.Spatial2DView(origin="body/cam/image"),
+                        rrb.Spatial2DView(origin="body/cam/depth_map"),
+                    )
+                )
+            )
+        )
+
+        # Get data for visualization
         original_images = images.cpu().numpy().squeeze(0)  # Remove batch dimension (S, C, H, W)
-        for i in range(original_images.shape[0]):
-            img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
-            # Denormalize image (assuming it was normalized to [-1, 1] or [0, 1])
-            img = np.clip(img, 0, 1)
-            img = (img * 255).astype(np.uint8)
-            rr.log(f"images/frame_{i:02d}", rr.Image(img))
-
-        # Log depth images
-        for i in range(depth_map.shape[0]):
-            depth_normalized = depth_map[i].squeeze()
-            depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
-            if depth_max > depth_min:
-                depth_vis = (depth_normalized - depth_min) / (depth_max - depth_min)
-            else:
-                depth_vis = np.zeros_like(depth_normalized)
-            rr.log(f"depth/frame_{i:02d}", rr.DepthImage(depth_vis))
-
+        
         # Visualize pointcloud with rerun if available
         if "world_points" in onnx_split_predictions and onnx_split_predictions["world_points"] is not None:
             print("Adding colored pointcloud to rerun visualization...")
@@ -349,9 +384,94 @@ if depth_map is not None:
             colors_valid = colors_flattened[valid_mask]
 
             # Log the colored pointcloud
-            rr.log("world/pointcloud", rr.Points3D(points_valid, colors=colors_valid, radii=0.01))
+            rr.log("body/pointcloud", rr.Points3D(points_valid, colors=colors_valid, radii=0.001))
 
-            print(f"Visualized {len(points_valid)} colored points out of {len(points_flattened)} total points")
+        # Log camera poses and images
+        if "extrinsic" in onnx_split_predictions and "intrinsic" in onnx_split_predictions:
+            extrinsic_np = onnx_split_predictions["extrinsic"]
+            intrinsic_np = onnx_split_predictions["intrinsic"]
+            
+            for i in range(original_images.shape[0]):
+                rr.set_time_sequence("frame", i)
+                
+                # Convert extrinsic (world-to-camera) to camera-to-world transform
+                world_to_camera = np.eye(4)
+                world_to_camera[:3, :4] = extrinsic_np[i]
+                camera_to_world = np.linalg.inv(world_to_camera)
+                
+                # Log camera pinhole model
+                rr.log("body/cam",
+                    rr.Pinhole(
+                        image_from_camera=intrinsic_np[i],
+                        width=original_images.shape[3],
+                        height=original_images.shape[2],
+                        image_plane_distance=0.02,
+                    )
+                )
+                
+                # Log camera transform
+                rr.log("body/cam", rr.Transform3D(
+                    translation=camera_to_world[:3, 3],
+                    mat3x3=camera_to_world[:3, :3],
+                ))
+                
+                # Draw camera pose
+                draw_pose(camera_to_world, f"body/pose{i}", static=True)
+                draw_pose(camera_to_world, "body/pose")
+                
+                # Log original image
+                img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
+                img = np.clip(img, 0, 1)
+                img = (img * 255).astype(np.uint8)
+                rr.log("body/cam/image", rr.Image(img))
+
+                # Log depth image
+                depth_normalized = depth_map[i].squeeze()
+                depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
+                if depth_max > depth_min:
+                    depth_vis = (depth_normalized - depth_min) / (depth_max - depth_min)
+                else:
+                    depth_vis = np.zeros_like(depth_normalized)
+                rr.log("body/cam/depth_map", rr.DepthImage(depth_vis))
+                
+                # Log per-frame pointcloud
+                if world_points_vis is not None:
+                    frame_points = world_points_vis[i].reshape(-1, 3)
+                    frame_colors = original_images[i].transpose(1, 2, 0).reshape(-1, 3)
+                    frame_colors = np.clip(frame_colors, 0, 1)
+                    frame_colors = (frame_colors * 255).astype(np.uint8)
+                    
+                    # Filter invalid points for this frame
+                    frame_valid_mask = np.all(np.isfinite(frame_points), axis=1)
+                    frame_valid_mask &= np.linalg.norm(frame_points, axis=1) < 100
+                    
+                    frame_points_valid = frame_points[frame_valid_mask]
+                    frame_colors_valid = frame_colors[frame_valid_mask]
+                    
+                    rr.log(f"body/points{i}", rr.Points3D(frame_points_valid, colors=frame_colors_valid, radii=0.0003), static=True)
+
+            if world_points_vis is not None:
+                print(f"Visualized {len(points_valid)} colored points out of {len(points_flattened)} total points")
+        else:
+            # If no camera parameters, still log images and depth
+            print("Camera parameters not available, logging images and depth only...")
+            for i in range(original_images.shape[0]):
+                rr.set_time_sequence("frame", i)
+                
+                # Log original image
+                img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
+                img = np.clip(img, 0, 1)
+                img = (img * 255).astype(np.uint8)
+                rr.log(f"images/frame_{i:02d}", rr.Image(img))
+
+                # Log depth image
+                depth_normalized = depth_map[i].squeeze()
+                depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
+                if depth_max > depth_min:
+                    depth_vis = (depth_normalized - depth_min) / (depth_max - depth_min)
+                else:
+                    depth_vis = np.zeros_like(depth_normalized)
+                rr.log(f"depth/frame_{i:02d}", rr.DepthImage(depth_vis))
 
 else:
     print("Depth predictions not found in expected format")
@@ -364,7 +484,8 @@ else:
     print(f"Saved raw split ONNX outputs to: {raw_save_path}")
 
 print("Split ONNX model test completed successfully!")
-print(f"Split ONNX depth images saved as: onnx_split_test_depth_00.png, onnx_split_test_depth_01.png, onnx_split_test_depth_02.png")
+print(f"Split ONNX depth images saved as: onnx_split_test_depth_00.png, onnx_split_test_depth_01.png")
+print("ONNX inference and rerun visualization with camera poses completed successfully!")
 
 # Compare with original predictions if available
 try:
