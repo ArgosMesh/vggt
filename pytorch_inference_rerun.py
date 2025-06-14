@@ -9,6 +9,7 @@ import numpy as np
 import sys
 import cv2
 import rerun as rr
+import rerun.blueprint as rrb
 from PIL import Image
 import tempfile
 import os
@@ -21,6 +22,24 @@ from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 
 device = "cpu"
+
+def draw_pose(transform: np.ndarray, name: str, static: bool = False):
+    """Draw camera pose with RGB axes arrows"""
+    rr.log(name,
+        rr.Arrows3D(origins=[0,0,0], vectors= [[0.03, 0, 0], [0, 0.03, 0], [0, 0, 0.03]],
+                    colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]],
+                    radii=[0.001, 0.001, 0.001]
+        ),
+        static=static,
+    )
+
+    rr.log(name,
+        rr.Transform3D(
+            translation=transform[:3, 3],
+            mat3x3=transform[:3, :3],
+        ),
+        static=static,
+    )
 
 def preprocess_images_640x480_then_load(image_paths):
     """
@@ -159,9 +178,24 @@ print("Visualizing PyTorch colored pointcloud with rerun...")
 rr.init("VGGT_PyTorch_Pointcloud")
 rr.spawn()
 
+# Set up blueprint with camera views
+rr.send_blueprint(
+    rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Spatial3DView(origin="body/pose", contents="body/**"),
+            rrb.Vertical(
+                rrb.Spatial2DView(origin="body/cam/image"),
+                rrb.Spatial2DView(origin="body/cam/depth_map"),
+            )
+        )
+    )
+)
+
 # Get world points and original images
 world_points_vis = predictions_np["world_points_from_depth"]  # (S, H, W, 3)
 original_images = images.cpu().numpy()  # (S, C, H, W)
+extrinsic_np = predictions_np["extrinsic"]  # (S, 3, 4)
+intrinsic_np = predictions_np["intrinsic"]  # (S, 3, 3)
 
 # Flatten the world points from all frames
 points_flattened = world_points_vis.reshape(-1, 3)
@@ -183,25 +217,66 @@ points_valid = points_flattened[valid_mask]
 colors_valid = colors_flattened[valid_mask]
 
 # Log the colored pointcloud
-rr.log("world/pointcloud", rr.Points3D(points_valid, colors=colors_valid, radii=0.01))
+rr.log("body/pointcloud", rr.Points3D(points_valid, colors=colors_valid, radii=0.001))
 
-# Also log original images for reference
+# Log camera poses and images
 for i in range(original_images.shape[0]):
+    rr.set_time_sequence("frame", i)
+    
+    # Convert extrinsic (world-to-camera) to camera-to-world transform
+    world_to_camera = np.eye(4)
+    world_to_camera[:3, :4] = extrinsic_np[i]
+    camera_to_world = np.linalg.inv(world_to_camera)
+    
+    # Log camera pinhole model
+    rr.log("body/cam",
+        rr.Pinhole(
+            image_from_camera=intrinsic_np[i],
+            width=original_images.shape[3],
+            height=original_images.shape[2],
+            image_plane_distance=0.02,
+        )
+    )
+    
+    # Log camera transform
+    rr.log("body/cam", rr.Transform3D(
+        translation=camera_to_world[:3, 3],
+        mat3x3=camera_to_world[:3, :3],
+    ))
+    
+    # Draw camera pose
+    draw_pose(camera_to_world, f"body/pose{i}", static=True)
+    draw_pose(camera_to_world, "body/pose")
+    
+    # Log original image
     img = original_images[i].transpose(1, 2, 0)  # CHW to HWC
-    # Denormalize image (assuming it was normalized to [-1, 1] or [0, 1])
     img = np.clip(img, 0, 1)
     img = (img * 255).astype(np.uint8)
-    rr.log(f"images/frame_{i:02d}", rr.Image(img))
+    rr.log("body/cam/image", rr.Image(img))
 
-# Log depth images for reference
-for i in range(depth_map_np.shape[0]):
+    # Log depth image
     depth_normalized = depth_map_np[i].squeeze()
     depth_min, depth_max = depth_normalized.min(), depth_normalized.max()
     if depth_max > depth_min:
         depth_vis = (depth_normalized - depth_min) / (depth_max - depth_min)
     else:
         depth_vis = np.zeros_like(depth_normalized)
-    rr.log(f"depth/frame_{i:02d}", rr.DepthImage(depth_vis))
+    rr.log("body/cam/depth_map", rr.DepthImage(depth_vis))
+    
+    # Log per-frame pointcloud
+    frame_points = world_points_vis[i].reshape(-1, 3)
+    frame_colors = original_images[i].transpose(1, 2, 0).reshape(-1, 3)
+    frame_colors = np.clip(frame_colors, 0, 1)
+    frame_colors = (frame_colors * 255).astype(np.uint8)
+    
+    # Filter invalid points for this frame
+    frame_valid_mask = np.all(np.isfinite(frame_points), axis=1)
+    frame_valid_mask &= np.linalg.norm(frame_points, axis=1) < 100
+    
+    frame_points_valid = frame_points[frame_valid_mask]
+    frame_colors_valid = frame_colors[frame_valid_mask]
+    
+    rr.log(f"body/points{i}", rr.Points3D(frame_points_valid, colors=frame_colors_valid, radii=0.0003), static=True)
 
 print(f"Visualized {len(points_valid)} colored points out of {len(points_flattened)} total points")
 print("PyTorch inference and rerun visualization completed successfully!")
